@@ -1,76 +1,80 @@
-from flask import Flask, render_template, request, send_file, after_this_request
-import yt_dlp
 import os
-import shutil
 import uuid
+from flask import Flask, render_template, request, redirect, url_for, send_file, after_this_request
+from redis import Redis
+from rq import Queue
+from worker import convert_playlist # Import the conversion function
 
+# --- App and Redis/RQ Setup ---
 app = Flask(__name__)
+redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
+conn = Redis.from_url(redis_url)
+q = Queue(connection=conn)
 
+# --- Ensure downloads directory exists ---
 DOWNLOAD_FOLDER = 'downloads'
-if not os.path.exists(DOWNLOAD_FOLDER):
-    os.makedirs(DOWNLOAD_FOLDER)
-
+os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 app.config['DOWNLOAD_FOLDER'] = DOWNLOAD_FOLDER
 
-
+# --- Routes ---
 @app.route('/')
 def index():
+    """Serves the main page with the URL input form."""
     return render_template('index.html')
 
-
-@app.route('/download', methods=['POST'])
-def download():
+@app.route('/convert', methods=['POST'])
+def convert():
+    """
+    1. Receives a URL from the form.
+    2. Creates a unique job ID.
+    3. Enqueues the conversion task for the background worker.
+    4. Redirects the user to the status page for that job.
+    """
     url = request.form['url']
+    if not url:
+        return redirect(url_for('index'))
 
-    session_id = str(uuid.uuid4())
-    download_path = os.path.join(app.config['DOWNLOAD_FOLDER'], session_id)
-    os.makedirs(download_path)
+    job_id = str(uuid.uuid4())
+    # Enqueue the job: function, args=(url, job_id), job_id itself
+    q.enqueue(convert_playlist, url, job_id, job_id=job_id)
 
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': os.path.join(download_path, '%(title)s.%(ext)s'),
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'ignoreerrors': True, # Continue downloading other videos in a playlist if one fails
-    }
+    return redirect(url_for('status', job_id=job_id))
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+@app.route('/status/<job_id>')
+def status(job_id):
+    """
+    Displays the status of a conversion job.
+    The page will auto-refresh to check for completion.
+    """
+    job = q.fetch_job(job_id)
+    if job:
+        return render_template('status.html', job=job)
+    return "Job not found.", 404
 
-            playlist_title = info.get('title', 'playlist')
-            # Sanitize the title to make it a valid filename
-            sanitized_title = "".join([c for c in playlist_title if c.isalpha() or c.isdigit() or c in (' ', '-')]).rstrip()
-            zip_filename_base = os.path.join(app.config['DOWNLOAD_FOLDER'], sanitized_title)
+@app.route('/download/<job_id>')
+def download(job_id):
+    """
+    Provides the download link for the completed zip file.
+    """
+    job = q.fetch_job(job_id)
+    if job and job.is_finished:
+        # The worker returns the sanitized title of the playlist
+        sanitized_title = job.result
+        # The zip file is named after the job_id
+        zip_path = os.path.join(app.config['DOWNLOAD_FOLDER'], f"{job_id}.zip")
 
-            # Create the zip file
-            zip_path = shutil.make_archive(zip_filename_base, 'zip', download_path)
+        @after_this_request
+        def cleanup(response):
+            # Clean up the zip file after it has been sent
+            try:
+                os.remove(zip_path)
+            except Exception as e:
+                app.logger.error(f"Error cleaning up zip file: {e}")
+            return response
 
-            @after_this_request
-            def cleanup(response):
-                try:
-                    # Clean up the original temp folder
-                    shutil.rmtree(download_path)
-                    # Clean up the generated zip file
-                    os.remove(zip_path)
-                except Exception as e:
-                    app.logger.error(f"Error during cleanup: {e}")
-                return response
+        return send_file(zip_path, as_attachment=True, download_name=f"{sanitized_title}.zip")
 
-            return send_file(zip_path, as_attachment=True, download_name=f'{sanitized_title}.zip')
-
-    except yt_dlp.utils.DownloadError as e:
-        # If yt-dlp fails, ensure the temp directory is cleaned up
-        shutil.rmtree(download_path)
-        return f"Error during download: {e}"
-    except Exception as e:
-        # Handle other unexpected errors
-        shutil.rmtree(download_path)
-        return f"An unexpected error occurred: {e}"
-
+    return "File not ready or does not exist.", 404
 
 if __name__ == '__main__':
     app.run(debug=True)

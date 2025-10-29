@@ -1,0 +1,31 @@
+services:
+  # A Redis instance for the job queue
+  - type: redis
+    name: redis-queue
+    ipAllowList: [] # Allow access from anywhere
+
+  # The Web Server (Flask App)
+  - type: web
+    name: youtube-to-mp3-web
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app"
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis-queue
+          property: connectionString
+
+  # The Background Worker
+  - type: worker
+    name: youtube-to-mp3-worker
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python worker.py"
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis-queue
+          property: connectionString

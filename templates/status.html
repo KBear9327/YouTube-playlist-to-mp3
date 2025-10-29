@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Conversion Status</title>
+    <!-- Refresh the page every 5 seconds -->
+    <meta http-equiv="refresh" content="5">
+</head>
+<body>
+    <h1>Conversion in Progress...</h1>
+
+    <p><strong>Job ID:</strong> {{ job.id }}</p>
+    <p><strong>Status:</strong> {{ job.get_status() }}</p>
+
+    {% if job.is_finished %}
+        <h2>Conversion Complete!</h2>
+        <p>Your file is ready for download.</p>
+        <a href="{{ url_for('download', job_id=job.id) }}" class="button">
+            Download MP3 Playlist
+        </a>
+    {% elif job.is_failed %}
+        <h2>Conversion Failed</h2>
+        <p>Something went wrong. Please try again.</p>
+        <p>Error: {{ job.exc_info }}</p>
+        <a href="{{ url_for('index') }}">Go back</a>
+    {% else %}
+        <p>Please wait. This page will automatically update when your file is ready.</p>
+        <p>This can take several minutes for long playlists.</p>
+    {% endif %}
+
+</body>
+</html>
