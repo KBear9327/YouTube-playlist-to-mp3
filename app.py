@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, send_file
+from flask import Flask, render_template, request, send_file, after_this_request
 import yt_dlp
 import os
 import shutil
@@ -34,24 +34,42 @@ def download():
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }],
+        'ignoreerrors': True, # Continue downloading other videos in a playlist if one fails
     }
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
-            # If it's a playlist, the title will be in the info dictionary
             playlist_title = info.get('title', 'playlist')
-            zip_filename = f"{playlist_title}.zip"
-            zip_path = os.path.join(app.config['DOWNLOAD_FOLDER'], zip_filename)
+            # Sanitize the title to make it a valid filename
+            sanitized_title = "".join([c for c in playlist_title if c.isalpha() or c.isdigit() or c in (' ', '-')]).rstrip()
+            zip_filename_base = os.path.join(app.config['DOWNLOAD_FOLDER'], sanitized_title)
 
-            shutil.make_archive(os.path.join(app.config['DOWNLOAD_FOLDER'], playlist_title), 'zip', download_path)
+            # Create the zip file
+            zip_path = shutil.make_archive(zip_filename_base, 'zip', download_path)
 
-            return send_file(zip_path, as_attachment=True)
+            @after_this_request
+            def cleanup(response):
+                try:
+                    # Clean up the original temp folder
+                    shutil.rmtree(download_path)
+                    # Clean up the generated zip file
+                    os.remove(zip_path)
+                except Exception as e:
+                    app.logger.error(f"Error during cleanup: {e}")
+                return response
+
+            return send_file(zip_path, as_attachment=True, download_name=f'{sanitized_title}.zip')
 
     except yt_dlp.utils.DownloadError as e:
-        return f"Error: {e}"
-    finally:
+        # If yt-dlp fails, ensure the temp directory is cleaned up
         shutil.rmtree(download_path)
+        return f"Error during download: {e}"
+    except Exception as e:
+        # Handle other unexpected errors
+        shutil.rmtree(download_path)
+        return f"An unexpected error occurred: {e}"
 
 
 if __name__ == '__main__':
