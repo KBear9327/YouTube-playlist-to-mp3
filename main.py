@@ -40,12 +40,14 @@ class YouTubeDownloader(BoxLayout):
             downloaded_bytes = d.get('downloaded_bytes') or 0
             if total_bytes > 0:
                 percent = downloaded_bytes / total_bytes * 100
-                self.update_status(f"Downloading: {d['filename']} - {percent:.2f}%")
+                playlist_index = d.get('playlist_index', '')
+                playlist_title = d.get('playlist_title', '')
+                self.update_status(f"Downloading video {playlist_index} from playlist '{playlist_title}': {percent:.2f}%")
         elif d['status'] == 'finished':
             self.update_status('Download finished, converting...')
 
     def start_download_thread(self, instance):
-        self.update_status('Starting download...')
+        self.update_status('Fetching playlist info...')
         thread = threading.Thread(target=self.download_video)
         thread.start()
 
@@ -62,16 +64,17 @@ class YouTubeDownloader(BoxLayout):
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
+            'outtmpl': os.path.join(download_dir, '%(playlist)s/%(playlist_index)s - %(title)s.%(ext)s'),
             'progress_hooks': [self.progress_hook],
+            'ignoreerrors': True,
         }
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
-            self.update_status('Download complete!')
+            self.update_status('Playlist download complete!')
         except Exception as e:
-            self.update_status(f'Error: {e}')
+            self.update_status(f'An error occurred: {e}')
 
 class MainApp(App):
     def build(self):
